@@ -16,7 +16,8 @@ dempm.mpm.set_configuration(
                       shape_function="QuadBSpline",
                       gravity=ti.Vector([0., 0., -9.8]),
                       material_type="Fluid",
-                      velocity_projection="Taylor")
+                      #velocity_projection="Taylor"
+                      )
 
 dempm.dem.set_configuration(
                       boundary=[None, None, None],

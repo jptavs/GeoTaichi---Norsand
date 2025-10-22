@@ -7,20 +7,20 @@ from src.utils.TypeDefination import vec3f
 @ti.data_oriented
 class set_orientation:
     def __init__(self, orientation) -> None:
-        direction = [0., 0., 1.]
+        euler_angle = [0., 0., 1.]
         if orientation is None or orientation == "constant":
             self.particle_orientation = "constant"
         elif orientation == "uniform":
             self.particle_orientation = "uniform"
         elif isinstance(orientation, (list, tuple, np.ndarray)):
             self.particle_orientation = "constant"
-            direction = list(orientation)
+            euler_angle = list(orientation)
         
         self.get_orientation = None
         self.set_orientation()
         if not orientation == "uniform":
             self.fix_orient = ti.Vector.field(3, float, shape=())
-            self.record_orientation(vec3f(direction))
+            self.record_orientation(vec3f(euler_angle))
 
     def set_orientation(self):
         if self.particle_orientation == 'constant':
