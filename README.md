@@ -198,7 +198,7 @@ We thank all amazing contributors for their great work and open source spirit. W
 </a>
 
 ### Contact us
-- If you spot any issue or need any help, please mail directly to <a href = "mailto:shiyh@zju.edu.cn">shiyh@zju.edu.cn</a>.
+- If you spot any issues or need help, please find our contact information on the lab website.
 
 ## Release Notes
 V0.4.0 (Aug 27, 2025)
