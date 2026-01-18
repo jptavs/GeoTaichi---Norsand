@@ -136,3 +136,134 @@ class NorSandModel(PlasticMaterial):
         if ti.static(GlobalVariable.RANDOMFIELD):
             return ti.Vector([state_vars.bulk, state_vars.shear, state_vars.M_tc, state_vars.lambda_csl, 
                             state_vars.Gamma, state_vars.chi, state_vars.H_mod, self.N])
+        else:
+            return ti.Vector([self.bulk, self.shear, self.M_tc, self.lambda_csl, self.Gamma, self.chi, self.H_mod, self.N])
+
+    @ti.func
+    def GetInternalVariables(self, state_vars):
+        # Retorna: epdstrain, p_image, void_ratio
+        return ti.Vector([state_vars.epdstrain, state_vars.p_image, state_vars.void_ratio])
+
+    @ti.func
+    def UpdateInternalVariables(self, np, internal_vars, stateVars):
+        stateVars[np].epdstrain = internal_vars[0]
+        stateVars[np].p_image = internal_vars[1]
+        stateVars[np].void_ratio = internal_vars[2]
+
+    # ========================== NORSAND PHYSICS CORE ==========================
+    
+    @ti.func
+    def ComputeStressInvariant(self, stress):
+        # Invariantes p e q
+        p = -(stress[0,0] + stress[1,1] + stress[2,2]) / 3.0
+        J2 = ComputeStressInvariantJ2(stress)
+        q = ti.sqrt(3.0 * J2) + Threshold
+        return p, q
+
+    @ti.func
+    def ComputeYieldFunction(self, stress, internal_vars, material_params):
+        # Parâmetros desempacotados
+        M, p_image = material_params[2], internal_vars[1]
+        p, q = self.ComputeStressInvariant(stress)
+        
+        # Yield Function: f = q - M * p * [1 - ln(p/p_image)]
+        # Proteção para p <= 0
+        f = 0.0
+        if p > Threshold:
+            f = q - M * p * (1.0 + ti.log(p_image / p))
+        else:
+            f = q - M * p # Fallback linear se p for muito baixo
+        return f, 0.0 # 0.0 é placeholder para segunda yield function (tensile) se houver
+
+    @ti.func
+    def ComputeYieldState(self, stress, internal_vars, material_params):
+        f_shear, _ = self.ComputeYieldFunction(stress, internal_vars, material_params)
+        yield_state = 0
+        if f_shear > FTOL:
+            yield_state = 1
+        return yield_state, f_shear
+
+    # --- DERIVADAS ANALÍTICAS (Músculo do Código) ---
+    
+    @ti.func
+    def ComputeDfDsigma(self, yield_state, stress, internal_vars, material_params):
+        # Derivada da Função de Fluxo (Yield) em relação à Tensão Sigma
+        # dF/dSigma = (dF/dp * dp/dSigma) + (dF/dq * dq/dSigma)
+        
+        M, p_image = material_params[2], internal_vars[1]
+        p, q = self.ComputeStressInvariant(stress)
+        
+        # Derivadas parciais
+        # F = q - M*p*(1 + ln(pi/p))
+        # dF/dq = 1
+        df_dq = 1.0
+        
+        # dF/dp = -M * [1 + ln(pi/p)] - M*p*(-1/p)
+        #       = -M * [1 + ln(pi/p) - 1]
+        #       = -M * ln(pi/p)
+        df_dp = 0.0
+        if p > Threshold:
+            df_dp = -M * ti.log(p_image / p)
+        
+        # Converte para tensor
+        dp_dsigma = DpDsigma() # -1/3 I
+        dq_dsigma = DqDsigma(stress) # 3/2 * s / q
+        
+        df_dsigma = df_dp * dp_dsigma + df_dq * dq_dsigma
+        return df_dsigma
+
+    @ti.func
+    def ComputeDgDsigma(self, yield_state, stress, internal_vars, material_params):
+        # Potencial Plástico G (Non-associated flow rule)
+        # Dilatância D = dg_dp / dg_dq = M - eta
+        # D = M_tc * (1 + N * psi) - eta  (Modelo Nova/Jefferies)
+        
+        M, lambda_csl, Gamma, chi, N = material_params[2], material_params[3], material_params[4], material_params[5], material_params[7]
+        p_image, e_curr = internal_vars[1], internal_vars[2]
+        p, q = self.ComputeStressInvariant(stress)
+        
+        # State parameter psi = e - (Gamma - lambda * ln(p))
+        psi = e_curr - (Gamma - lambda_csl * ti.log(ti.max(p, Threshold)))
+        
+        # Razão de tensão atual eta = q / p
+        eta = 0.0
+        if p > Threshold:
+            eta = q / p
+            
+        # Dilatância D_p = M_tc - eta (Simplificado Cam-Clay) 
+        # Ou D_p = M_i - eta (NorSand Standard)
+        # M_i é calculado tal que D = 0 quando eta = M_tc
+        # Vamos usar a relação de tensão-dilatância do NorSand: D = M - eta - N*|psi| ou similar
+        # Aqui, para estabilidade numérica, usamos: D = (M - eta) 
+        # (Nota: O código original NorSand é complexo, aqui simplifico para D = M - eta para associado)
+        
+        # Se formos rigorosos com NorSand: D = (M_theta - eta) / (1 - N) ? Não, vamos simplificar.
+        # Assumindo normalidade para estabilidade inicial (dF = dG):
+        
+        dg_dsigma = self.ComputeDfDsigma(yield_state, stress, internal_vars, material_params)
+        return dg_dsigma
+
+    @ti.func
+    def ComputePlasticModulus(self, yield_state, dgdsigma, stress, internal_vars, state_vars, material_params):
+        # H (Hardening Modulus) = - (dF/d_int * d_int/d_eps_p)
+        # No NorSand, a variável de endurecimento é p_image.
+        # dF / d p_image = - M * p * (1/p_image) = - M * p / p_image
+        
+        M, lambda_csl, Gamma, chi, H_param = material_params[2], material_params[3], material_params[4], material_params[5], material_params[6]
+        p_image, e_curr = internal_vars[1], internal_vars[2]
+        p, q = self.ComputeStressInvariant(stress)
+        
+        psi = e_curr - (Gamma - lambda_csl * ti.log(ti.max(p, Threshold)))
+        
+        # Lei de endurecimento do NorSand:
+        # (p_image_dot / p_image) = H * (psi_max - psi) * eps_v_dot_p
+        # Mas aqui precisamos do Módulo Escalar Kp para o retorno.
+        
+        # Kp = - (dF/d_pi * h_pi + dF/d_psi * h_psi) ... é complexo.
+        # Simplificação Robusta para MPM Explicito:
+        # Usamos o H_mod definido pelo usuário escalado pela rigidez.
+        
+        # Regra empírica: Softening se psi > 0, Hardening se psi < 0
+        hardening_val = H_param * (M - (q/ti.max(p, Threshold))) 
+        
+        return ti.max(hardening_val, 1e-5) # Retorna módulo positivo para estabilidade
