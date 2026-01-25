@@ -61,16 +61,22 @@ class MaterialHandle(ConstitutiveBase):
         from src.physics_model.consititutive_model.infinitesimal_strain.MohrCoulomb import MohrCoulombModel
         from src.physics_model.consititutive_model.infinitesimal_strain.StateDependentMohrCoulomb import StateDependentMohrCoulombModel
         from src.physics_model.consititutive_model.infinitesimal_strain.DruckerPrager import DruckerPragerModel
+        # --- ALTERAÇÃO 1: Import do NorSand ---
+        from src.physics_model.consititutive_model.infinitesimal_strain.NorSand import NorSandModel
+        # --------------------------------------
         from src.physics_model.consititutive_model.infinitesimal_strain.ModifiedCamClay import ModifiedCamClayModel
         from src.physics_model.consititutive_model.strain_rate.Newtonian import NewtonianModel
         from src.physics_model.consititutive_model.strain_rate.Bingham import BinghamModel
         from src.physics_model.consititutive_model.UserDefined import UserDefined
+        
         if constitutive_model == "None" or constitutive_model == "RigidBody":
             from src.physics_model.consititutive_model.RigidBody import RigidModel
             return RigidModel(material_type=sims.material_type, configuration=self.get_unified_configuration(sims.configuration), solver_type=sims.solver_type)
         
         if sims.material_type == "Solid" or sims.material_type == "TwoPhaseSingleLayer" or sims.material_type == "TwoPhaseDoubleLayer":
-            model_type = ["LinearElastic", "HenckyElastic", "NeoHookean", "ElasticPerfectlyPlastic", "MohrCoulomb", "DruckerPrager", "ModifiedCamClay", "CohesiveModifiedCamClay", "UserDefined"]
+            # --- ALTERAÇÃO 2: Adicionado NorSand na lista de validação ---
+            model_type = ["LinearElastic", "HenckyElastic", "NeoHookean", "ElasticPerfectlyPlastic", "MohrCoulomb", "DruckerPrager", "NorSand", "ModifiedCamClay", "CohesiveModifiedCamClay", "UserDefined"]
+            
             if sims.material_type == "TwoPhaseSingleLayer" or sims.material_type == "TwoPhaseDoubleLayer":
                 if sims.configuration =="TLMPM":
                     raise RuntimeError("Only /Explicit/ /ULMPM/ supports two phase model")
@@ -112,6 +118,10 @@ class MaterialHandle(ConstitutiveBase):
                 return StateDependentMohrCoulombModel(material_type=sims.material_type, configuration=self.get_unified_configuration(sims.configuration), solver_type=sims.solver_type, stress_integration=sims.stress_integration)
             elif constitutive_model == "DruckerPrager":
                 return DruckerPragerModel(material_type=sims.material_type, configuration=self.get_unified_configuration(sims.configuration), solver_type=sims.solver_type, stress_integration=sims.stress_integration)
+            # --- ALTERAÇÃO 3: Lógica de instanciação do NorSand ---
+            elif constitutive_model == "NorSand":
+                return NorSandModel(material_type=sims.material_type, configuration=self.get_unified_configuration(sims.configuration), solver_type=sims.solver_type, stress_integration=sims.stress_integration)
+            # ------------------------------------------------------
             elif constitutive_model == "ModifiedCamClay":
                 return ModifiedCamClayModel(material_type=sims.material_type, configuration=self.get_unified_configuration(sims.configuration), solver_type=sims.solver_type, stress_integration=sims.stress_integration)
             elif constitutive_model == "UserDefined":
