@@ -8,7 +8,6 @@ from third_party.pyevtk.hl import pointsToVTK, gridToVTK, unstructuredGridToVTK
 
 
 class Recorder:
-
     def __init__(self, sims):
         self.vtk_path = None
         self.particle_path = None
@@ -20,15 +19,14 @@ class Recorder:
         self.mkdir(sims)
         self.manage_function(sims)
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def manage_function(self, sims: Simulation):
-
         if 'particle' in sims.monitor_type:
             self.visualizeParticle = no_operation
             if sims.visualize:
                 if sims.dimension == 2:
                     self.visualizeParticle = self.VisualizeParticle2D
-                elif sims.dimension == 3:
+                else:
                     self.visualizeParticle = self.VisualizeParticle
 
             self.save_particle = self.MonitorParticle
@@ -38,7 +36,7 @@ class Recorder:
             if sims.visualize:
                 if sims.dimension == 2:
                     self.visualizeGrid = self.VisualizeGrid2D
-                elif sims.dimension == 3:
+                else:
                     self.visualizeGrid = self.VisualizeGrid
             self.save_grid = self.MonitorGrid
 
@@ -46,16 +44,15 @@ class Recorder:
         if 'object' in sims.monitor_type:
             self.visualizedObject = self.VisualizeObject2D
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def output(self, sims, scene):
         self.save_particle(sims, scene)
         self.save_grid(sims, scene)
         self.visualizedObject(sims, scene)
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def mkdir(self, sims: Simulation):
-        if not os.path.exists(sims.path):
-            os.makedirs(sims.path)
+        os.makedirs(sims.path, exist_ok=True)
 
         self.particle_path = sims.path + '/particles'
         self.vtk_path = sims.path + '/vtks'
@@ -65,12 +62,19 @@ class Recorder:
         os.makedirs(self.vtk_path, exist_ok=True)
         os.makedirs(self.grid_path, exist_ok=True)
 
-    # ------------------------------------------------------------------
+    # =============================================================
+    # ======================= VISUALIZAÇÃO ========================
+    # =============================================================
+
     def VisualizeObject2D(self, sims: Simulation, scene: myScene):
-        polygon = scene.contact.polygon_vertices.to_numpy().astype(np.float32)
+        polygon = scene.contact.polygon_vertices.to_numpy()
+        polygon = np.ascontiguousarray(polygon)
+
+        dtype = polygon.dtype
+
         posx = polygon[:, 0]
         posy = polygon[:, 1]
-        posz = np.zeros(posx.shape[0], dtype=np.float32)
+        posz = np.zeros(posx.shape[0], dtype=dtype)
 
         connectivity = np.arange(polygon.shape[0], dtype=np.int32)
         offsets = np.array([polygon.shape[0]], dtype=np.int32)
@@ -82,22 +86,22 @@ class Recorder:
             connectivity, offsets, cell_types
         )
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def VisualizeParticle(self, sims, position, velocity, volume, state_vars):
+        position = np.ascontiguousarray(position)
+        velocity = np.ascontiguousarray(velocity)
+        volume = np.ascontiguousarray(volume)
 
-        pos = position.astype(np.float32)
-        vel = velocity.astype(np.float32)
+        posx = position[:, 0]
+        posy = position[:, 1]
+        posz = position[:, 2]
 
-        posx, posy, posz = pos[:, 0], pos[:, 1], pos[:, 2]
-        velx, vely, velz = vel[:, 0], vel[:, 1], vel[:, 2]
+        velx = velocity[:, 0]
+        vely = velocity[:, 1]
+        velz = velocity[:, 2]
 
-        data = {
-            "velocity": (velx, vely, velz),
-            "volume": volume.astype(np.float32)
-        }
-
-        for k, v in state_vars.items():
-            data[k] = v.astype(np.float32)
+        data = {"velocity": (velx, vely, velz), "volume": volume}
+        data.update(state_vars)
 
         pointsToVTK(
             self.vtk_path + f'/GraphicMPMParticle{sims.current_print:06d}',
@@ -105,27 +109,24 @@ class Recorder:
             data=data
         )
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def VisualizeParticle2D(self, sims, position, velocity, volume, state_vars):
+        position = np.ascontiguousarray(position)
+        velocity = np.ascontiguousarray(velocity)
+        volume = np.ascontiguousarray(volume)
 
-        pos = position.astype(np.float32)
-        vel = velocity.astype(np.float32)
+        dtype = position.dtype
 
-        posx = pos[:, 0]
-        posy = pos[:, 1]
-        posz = np.zeros(posx.shape[0], dtype=np.float32)
+        posx = position[:, 0]
+        posy = position[:, 1]
+        posz = np.zeros(posx.shape[0], dtype=dtype)
 
-        velx = vel[:, 0]
-        vely = vel[:, 1]
-        velz = np.zeros(velx.shape[0], dtype=np.float32)
+        velx = velocity[:, 0]
+        vely = velocity[:, 1]
+        velz = np.zeros(velx.shape[0], dtype=dtype)
 
-        data = {
-            "velocity": (velx, vely, velz),
-            "volume": volume.astype(np.float32)
-        }
-
-        for k, v in state_vars.items():
-            data[k] = v.astype(np.float32)
+        data = {"velocity": (velx, vely, velz), "volume": volume}
+        data.update(state_vars)
 
         pointsToVTK(
             self.vtk_path + f'/GraphicMPMParticle{sims.current_print:06d}',
@@ -133,10 +134,10 @@ class Recorder:
             data=data
         )
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def VisualizeGrid(self, sims, coords, point_data={}, cell_data={}):
+        coords = np.ascontiguousarray(coords)
 
-        coords = coords.astype(np.float32)
         coordx = np.unique(coords[:, 0])
         coordy = np.unique(coords[:, 1])
         coordz = np.unique(coords[:, 2])
@@ -148,13 +149,14 @@ class Recorder:
             cellData=cell_data
         )
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def VisualizeGrid2D(self, sims, coords, point_data={}, cell_data={}):
+        coords = np.ascontiguousarray(coords)
+        dtype = coords.dtype
 
-        coords = coords.astype(np.float32)
         coordx = np.unique(coords[:, 0])
         coordy = np.unique(coords[:, 1])
-        coordz = np.zeros(1, dtype=np.float32)
+        coordz = np.zeros(1, dtype=dtype)
 
         gridToVTK(
             self.vtk_path + f'/GraphicMPMGrid{sims.current_print:06d}',
@@ -163,9 +165,11 @@ class Recorder:
             cellData=cell_data
         )
 
-    # ------------------------------------------------------------------
-    def MonitorParticle(self, sims: Simulation, scene: myScene):
+    # =============================================================
+    # ======================== MONITOR ============================
+    # =============================================================
 
+    def MonitorParticle(self, sims: Simulation, scene: myScene):
         n = scene.particleNum[0]
 
         position = scene.particle.x.to_numpy()[:n]
@@ -185,9 +189,7 @@ class Recorder:
             t_current=sims.current_time
         )
 
-    # ------------------------------------------------------------------
     def MonitorGrid(self, sims: Simulation, scene: myScene):
-
         coords = scene.element.mesh.nodal_coords
         self.visualizeGrid(sims, coords)
 
