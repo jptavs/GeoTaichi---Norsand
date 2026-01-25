@@ -92,3 +92,5 @@ class WriteFile:
             self.grid_path + f'/MPMGrid{sims.current_print:06d}',
             x, y, z
         )
+# ---- alias explícito exigido pelo GeoTaichi ----
+WriteFile = WriteFile
