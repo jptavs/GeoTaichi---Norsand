@@ -1,189 +1,171 @@
 import taichi as ti
-import numpy as np
+import math
 
-from src.physics_model.consititutive_model.infinitesimal_strain.MaterialKernel import *
-from src.physics_model.consititutive_model.infinitesimal_strain.ElasPlasticity import PlasticMaterial
-from src.utils.constants import PI, FTOL, Threshold
+from src.physics_model.consititutive_model.infinitesimal_strain.InfinitesimalStrainModel import (
+    InfinitesimalStrainModel
+)
+from src.physics_model.consititutive_model.infinitesimal_strain.MaterialKernel import Sigrot
 from src.utils.ObjectIO import DictIO
-import src.utils.GlobalVariable as GlobalVariable
 
 
 @ti.data_oriented
-class NorSandModel(PlasticMaterial):
-    """
-    NorSand constitutive model for GeoTaichi
-    Compatible with ULExplicitEngine + Return Mapping
-    """
+class NorSandModel(InfinitesimalStrainModel):
 
-    def __init__(self, material_type="Solid", configuration="UL",
-                 solver_type="Explicit", stress_integration="ReturnMapping"):
-        super().__init__(material_type, configuration, solver_type, stress_integration)
+    def __init__(self, material_type, configuration,
+                 solver_type="Explicit",
+                 stress_integration="ReturnMapping"):
+        super().__init__(material_type, configuration, solver_type)
 
-        # Defaults (overwritten in model_initialize)
-        self.lambda_csl = 0.05
-        self.Gamma = 1.10
-        self.M_tc = 1.25
-        self.N = 0.3
-        self.chi = 3.5
-        self.H_mod = 100.0
-        self.e0 = 0.6
+        # Elasticidade
+        self.G = 0.0
+        self.K = 0.0
+        self.nu = 0.0
 
-    # ------------------------------------------------------------------
-    # INITIALIZATION
-    # ------------------------------------------------------------------
+        # Parâmetros NorSand
+        self.Gamma = 0.0
+        self.lambda_csl = 0.0
+        self.M = 0.0
+        self.chi = 0.0
+        self.H = 0.0
+        self.e0 = 0.0
 
-    def model_initialize(self, material):
-        density = DictIO.GetAlternative(material, 'Density', 2650.0)
-        young = DictIO.GetEssential(material, 'YoungModulus')
-        poisson = DictIO.GetAlternative(material, 'PoissonRatio', 0.25)
-
-        self.lambda_csl = DictIO.GetAlternative(material, 'LambdaCSL', 0.05)
-        self.Gamma = DictIO.GetAlternative(material, 'Gamma', 1.10)
-        self.M_tc = DictIO.GetAlternative(material, 'M', 1.25)
-        self.N = DictIO.GetAlternative(material, 'N', 0.3)
-        self.chi = DictIO.GetAlternative(material, 'Chi', 3.5)
-        self.H_mod = DictIO.GetAlternative(material, 'HardeningH', 100.0)
-        self.e0 = DictIO.GetAlternative(material, 'InitialVoidRatio', 0.65)
-
-        self.density = density
-        self.young = young
-        self.poisson = poisson
-
-        self.shear, self.bulk = self.calculate_lame_parameter(young, poisson)
-        self.max_sound_speed = self.get_sound_speed(density, young, poisson)
-
-    def print_message(self, materialID):
-        print(" Constitutive Model Information ".center(71, '-'))
-        print("Constitutive model: NorSand (Plastic, Return Mapping)")
-        print("Model ID:", materialID)
-        if not GlobalVariable.RANDOMFIELD:
-            print(f"M      = {self.M_tc}")
-            print(f"Gamma  = {self.Gamma}")
-            print(f"Lambda = {self.lambda_csl}")
-            print(f"Chi    = {self.chi}")
-            print(f"H      = {self.H_mod}")
+        self.stress_integration = stress_integration
 
     # ------------------------------------------------------------------
-    # STATE VARIABLES
+    # Inicialização
     # ------------------------------------------------------------------
+    def model_initialize(self, parameter):
 
+        self.density = DictIO.GetEssential(parameter, 'Density')
+        self.young = DictIO.GetEssential(parameter, 'YoungModulus')
+        self.nu = DictIO.GetEssential(parameter, 'PoissonRatio')
+
+        self.Gamma = DictIO.GetAlternative(parameter, 'Gamma', 1.10)
+        self.lambda_csl = DictIO.GetAlternative(parameter, 'LambdaCSL', 0.05)
+        self.M = DictIO.GetAlternative(parameter, 'M', 1.25)
+        self.chi = DictIO.GetAlternative(parameter, 'Chi', 3.5)
+        self.H = DictIO.GetAlternative(parameter, 'HardeningH', 100.0)
+        self.e0 = DictIO.GetAlternative(parameter, 'InitialVoidRatio', 0.65)
+
+        self.G = self.young / (2.0 * (1.0 + self.nu))
+        self.K = self.young / (3.0 * (1.0 - 2.0 * self.nu))
+
+    # ------------------------------------------------------------------
+    # Variáveis de estado (⚠️ TUDO float32)
+    # ------------------------------------------------------------------
     def define_state_vars(self):
-        state_vars = {
-            "epdstrain": float,     # accumulated plastic deviatoric strain
-            "p_image": float,       # image pressure (hardening variable)
-            "void_ratio": float
+        return {
+            "stress": ti.types.vector(6, ti.f32),
+            "void_ratio": ti.f32,
+            "p": ti.f32,
+            "q": ti.f32
         }
-        return state_vars
 
     @ti.func
-    def GetMaterialParameter(self, stress, state_vars):
-        return ti.Vector([
-            self.bulk,
-            self.shear,
-            self.M_tc,
-            self.lambda_csl,
-            self.Gamma,
-            self.chi,
-            self.H_mod,
-            self.N
-        ])
-
-    @ti.func
-    def GetInternalVariables(self, state_vars):
-        return ti.Vector([
-            state_vars.epdstrain,
-            state_vars.p_image,
-            state_vars.void_ratio
-        ])
-
-    @ti.func
-    def UpdateInternalVariables(self, np, internal_vars, stateVars):
-        stateVars[np].epdstrain = internal_vars[0]
-        stateVars[np].p_image = internal_vars[1]
-        stateVars[np].void_ratio = internal_vars[2]
+    def _initialize_vars_update_lagrangian(self, np, particle, stateVars):
+        stateVars[np].void_ratio = ti.cast(self.e0, ti.f32)
+        stateVars[np].p = ti.cast(1.0, ti.f32)
+        stateVars[np].q = ti.cast(0.0, ti.f32)
 
     # ------------------------------------------------------------------
-    # INVARIANTS
+    # Stress update 2D
     # ------------------------------------------------------------------
-
     @ti.func
-    def ComputeStressInvariant(self, stress):
-        p = -(stress[0, 0] + stress[1, 1] + stress[2, 2]) / 3.0
-        J2 = ComputeStressInvariantJ2(stress)
-        q = ti.sqrt(3.0 * J2) + Threshold
-        return p, q
+    def ComputeStress2D(self, np, previous_stress, dt, particle, stateVars):
+
+        L = particle[np].L
+
+        de_xx = L[0, 0] * dt
+        de_yy = L[1, 1] * dt
+        de_xy = 0.5 * (L[0, 1] + L[1, 0]) * dt
+        dw_xy = 0.5 * (L[0, 1] - L[1, 0]) * dt
+
+        strain_increment = ti.Vector([
+            de_xx,
+            de_yy,
+            0.0,
+            2.0 * de_xy,
+            0.0,
+            0.0
+        ], ti.f32)
+
+        vorticity_increment = ti.Vector([0.0, 0.0, dw_xy], ti.f32)
+
+        return self.core(
+            np,
+            previous_stress,
+            strain_increment,
+            vorticity_increment,
+            stateVars
+        )
 
     # ------------------------------------------------------------------
-    # YIELD FUNCTION
+    # Stress update 3D
     # ------------------------------------------------------------------
-
     @ti.func
-    def ComputeYieldFunction(self, stress, internal_vars, material_params):
-        M = material_params[2]
-        p_image = internal_vars[1]
+    def ComputeStress3D(self, np, previous_stress, dt, particle, stateVars):
 
-        p, q = self.ComputeStressInvariant(stress)
+        L = particle[np].L
 
-        f = 0.0
-        if p > Threshold:
-            f = q - M * p * (1.0 + ti.log(p_image / p))
-        else:
-            f = q - M * p
+        de_xx = L[0, 0] * dt
+        de_yy = L[1, 1] * dt
+        de_zz = L[2, 2] * dt
 
-        return f, 0.0
+        de_xy = 0.5 * (L[0, 1] + L[1, 0]) * dt
+        de_yz = 0.5 * (L[1, 2] + L[2, 1]) * dt
+        de_xz = 0.5 * (L[0, 2] + L[2, 0]) * dt
 
-    @ti.func
-    def ComputeYieldState(self, stress, internal_vars, material_params):
-        f, _ = self.ComputeYieldFunction(stress, internal_vars, material_params)
-        return ti.cast(f > FTOL, ti.i32), f
+        dw_yz = 0.5 * (L[1, 2] - L[2, 1]) * dt
+        dw_zx = 0.5 * (L[2, 0] - L[0, 2]) * dt
+        dw_xy = 0.5 * (L[0, 1] - L[1, 0]) * dt
 
-    # ------------------------------------------------------------------
-    # DERIVATIVES
-    # ------------------------------------------------------------------
+        strain_increment = ti.Vector([
+            de_xx,
+            de_yy,
+            de_zz,
+            2.0 * de_xy,
+            2.0 * de_yz,
+            2.0 * de_xz
+        ], ti.f32)
 
-    @ti.func
-    def ComputeDfDsigma(self, yield_state, stress, internal_vars, material_params):
-        M = material_params[2]
-        p_image = internal_vars[1]
+        vorticity_increment = ti.Vector([dw_yz, dw_zx, dw_xy], ti.f32)
 
-        p, q = self.ComputeStressInvariant(stress)
-
-        df_dq = 1.0
-        df_dp = 0.0
-        if p > Threshold:
-            df_dp = -M * ti.log(p_image / p)
-
-        dp_dsigma = DpDsigma()
-        dq_dsigma = DqDsigma(stress)
-
-        return df_dp * dp_dsigma + df_dq * dq_dsigma
-
-    @ti.func
-    def ComputeDgDsigma(self, yield_state, stress, internal_vars, material_params):
-        # Associado para robustez numérica (MPM explícito)
-        return self.ComputeDfDsigma(yield_state, stress, internal_vars, material_params)
+        return self.core(
+            np,
+            previous_stress,
+            strain_increment,
+            vorticity_increment,
+            stateVars
+        )
 
     # ------------------------------------------------------------------
-    # HARDENING MODULUS
+    # Núcleo constitutivo
     # ------------------------------------------------------------------
-
     @ti.func
-    def ComputePlasticModulus(self, yield_state, dgdsigma,
-                              stress, internal_vars, state_vars, material_params):
+    def core(self, np, previous_stress, strain_increment,
+             vorticity_increment, stateVars):
 
-        M = material_params[2]
-        lambda_csl = material_params[3]
-        Gamma = material_params[4]
-        H = material_params[6]
+        de = strain_increment
 
-        p_image = internal_vars[1]
-        e = internal_vars[2]
+        d_vol = de[0] + de[1] + de[2]
+        d_dev = de - (d_vol / 3.0) * ti.Vector(
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], ti.f32
+        )
 
-        p, q = self.ComputeStressInvariant(stress)
+        d_sigma_vol = self.K * d_vol
+        d_sigma_dev = 2.0 * self.G * d_dev
 
-        psi = e - (Gamma - lambda_csl * ti.log(ti.max(p, Threshold)))
+        stress_rot = Sigrot(previous_stress, vorticity_increment)
 
-        # NorSand-inspired hardening/softening
-        Kp = H * (M - q / ti.max(p, Threshold)) * (1.0 - psi)
+        stress_new = (
+            previous_stress
+            + stress_rot
+            + d_sigma_dev
+            + d_sigma_vol * ti.Vector([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], ti.f32)
+        )
 
-        return ti.max(Kp, 1e-6)
+        p_current = -(stress_new[0] + stress_new[1] + stress_new[2]) / 3.0
+        stateVars[np].p = p_current
+        stateVars[np].void_ratio += (1.0 + stateVars[np].void_ratio) * d_vol
+
+        return stress_new
