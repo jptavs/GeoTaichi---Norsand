@@ -1,10 +1,10 @@
 import os
 import numpy as np
-from third_party.pyevtk.hl import pointsToVTK
-from third_party.pyevtk.hl import gridToVTK
+from third_party.pyevtk.hl import pointsToVTK, gridToVTK
 
 
-class Recorder:
+class WriteFile:
+
     def __init__(self, save_path, visualize=True):
         self.save_path = save_path
         self.visualize = visualize
@@ -17,62 +17,46 @@ class Recorder:
         os.makedirs(self.grid_path, exist_ok=True)
         os.makedirs(self.vtk_path, exist_ok=True)
 
-    # ================================================================
-    # Main interface
-    # ================================================================
+    # ==========================================================
     def output(self, sims, scene):
         self.save_particle(sims, scene)
         self.save_grid(sims, scene)
 
-    # ================================================================
-    # Particle
-    # ================================================================
+    # ==========================================================
     def save_particle(self, sims, scene):
         self.MonitorParticle(sims, scene)
 
     def MonitorParticle(self, sims, scene):
         particle = scene.particle
-        npart = scene.particleNum
 
-        pos = particle.position.to_numpy()
-        vel = particle.velocity.to_numpy()
-        vol = particle.volume.to_numpy()
+        position = particle.position.to_numpy()
+        velocity = particle.velocity.to_numpy()
+        volume = particle.volume.to_numpy()
 
         stress = particle.stress.to_numpy()
-        vel_grad = particle.velocity_gradient.to_numpy()
+        velocity_gradient = particle.velocity_gradient.to_numpy()
         state_vars = particle.state_vars.to_numpy()
-
-        output = {
-            "position": pos,
-            "velocity": vel,
-            "volume": vol,
-            "stress": stress,
-            "velocity_gradient": vel_grad,
-            "state_vars": state_vars,
-        }
 
         if self.visualize:
             self.VisualizeParticle2D(
-                sims,
-                pos,
-                vel,
-                vol,
-                state_vars
+                sims, position, velocity, volume, state_vars
             )
 
         np.savez(
             self.particle_path + f'/MPMParticle{sims.current_print:06d}',
-            **output
+            position=position,
+            velocity=velocity,
+            volume=volume,
+            stress=stress,
+            velocity_gradient=velocity_gradient,
+            state_vars=state_vars
         )
 
-    # ================================================================
-    # 🔧 FIX REAL AQUI
-    # ================================================================
+    # ==========================================================
     def VisualizeParticle2D(self, sims, position, velocity, volume, state_vars):
+
         posx = position[:, 0].astype(np.float64)
         posy = position[:, 1].astype(np.float64)
-
-        # 🔥 CORREÇÃO CRÍTICA
         posz = np.zeros_like(posx, dtype=np.float64)
 
         velx = velocity[:, 0].astype(np.float64)
@@ -84,6 +68,7 @@ class Recorder:
             "volume": volume.astype(np.float64)
         }
 
+        # Estado interno do NorSand: escrever como campos escalares
         for i in range(state_vars.shape[1]):
             data[f"state_{i}"] = state_vars[:, i].astype(np.float64)
 
@@ -93,9 +78,7 @@ class Recorder:
             data=data
         )
 
-    # ================================================================
-    # Grid
-    # ================================================================
+    # ==========================================================
     def save_grid(self, sims, scene):
         grid = scene.grid
         coords = grid.coords.to_numpy()
